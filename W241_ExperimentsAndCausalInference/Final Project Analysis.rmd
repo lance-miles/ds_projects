@@ -1,0 +1,410 @@
+---
+title: "Detecting Racial Biases on Craigslist’s Shared Housing Market"
+author: "Chandramouli Venkatesan, Lance Miles, Natallia Butenka"
+date: "12/7/2018"
+output: pdf_document
+---
+
+```{r, include=FALSE}
+library(foreign)
+library(data.table)
+library(foreign)
+if(!require(dplyr)){install.packages("dplyr");library(dplyr)}
+if(!require(stargazer)){install.packages("stargazer");library(stargazer)}
+if(!require(sandwich)){install.packages("sandwich");library(sandwich)}
+if(!require(ggplot2)){install.packages("ggplot2");library(ggplot2)}
+if(!require(pwr)){install.packages("pwr");library(pwr)}
+if(!require(knitr)){install.packages("knitr");library(knitr)}
+
+
+
+rental_raw <- read.csv('./Subject Recruitment and Treatment - Final Project - Cleaned Final Data.csv')
+rental = rental_raw[-c(41:60),-c(1,6,10)]
+rental$MonthlyRate_1000 = rental$Monthly_Rate/1000
+
+```
+
+```{r echo = TRUE}
+
+mean(rental$Responded)
+
+```
+
+## R Markdown
+
+## Covariate Balance Checks
+
+```{r echo = TRUE}
+
+check_sums = by(rental, rental$Treatment, summary)
+
+check_sums
+
+t.test(rental$Monthly_Rate[rental$Treatment == 1],
+       rental$Monthly_Rate[rental$Treatment == 0])
+
+
+t.test(rental$Monthly_Rate[(rental$Treatment == 1) & (rental$Responded == 1)],
+       rental$Monthly_Rate[(rental$Treatment == 1) & (rental$Responded == 0)])
+
+t.test(rental$Monthly_Rate[(rental$Treatment == 0) & (rental$Responded == 1)],
+       rental$Monthly_Rate[(rental$Treatment == 0) & (rental$Responded == 0)])
+
+```
+
+
+```{r echo = TRUE}
+
+response_rates = rental %>%
+  group_by(Treatment, Responded) %>%
+  summarise(count = n())
+
+response_rates$Responded[response_rates$Responded == 0] = "No Response"
+response_rates$Responded[response_rates$Responded == 1] = "Responded"
+
+
+ggplot(response_rates,aes(x=Responded,y=count,fill=factor(Treatment)))+
+  geom_bar(stat="identity",position="dodge")+
+  scale_fill_discrete(name="Treatment",
+                      breaks=c(0, 1),
+                      labels=c("Connor", "Jamal"))+
+  xlab("Responded to Application")+ylab("Count") + scale_x_discrete(labels=c("0" = "No Response", "1" = "Response",
+                              "2" = "Dose 2"))
+
+```
+
+
+
+
+```{r echo = TRUE}
+
+t.test(rental$Responded[rental$Treatment == 1],
+       rental$Responded[rental$Treatment == 0])
+
+(ATE = mean(rental$Responded[rental$Treatment == 1]) - mean(rental$Responded[rental$Treatment == 0]))
+
+```
+
+
+```{r echo = TRUE}
+
+t_rental = rental[rental$Treatment == 1,]
+c_rental = rental[rental$Treatment == 0,]
+
+par(mfrow=c(1,2))
+
+ggplot(data= t_rental, aes(rent_control)) + 
+  geom_histogram(bins = 15)
+
+ggplot(data= c_rental, aes(rent_control), main = 'Histogram of rent_control Ads applied to w/ Control') + 
+  geom_histogram(bins = 15)
+
+t_rental[ t_rental == "missing" ] <- NA
+c_rental[ c_rental == "missing" ] <- NA
+
+t_rooms = na.omit(t_rental)
+c_rooms = na.omit(c_rental)
+
+ggplot(data= t_rooms, aes(Monthly_Rate)) + 
+  geom_histogram(bins = 15) + scale_x_continuous(limits=c(100, 4000))
+
+ggplot(data= c_rooms, aes(Monthly_Rate), main = 'Histogram of rent_control Ads applied to w/ Control') + 
+  geom_histogram(bins = 15) + scale_x_continuous(limits=c(100, 4000))
+
+ggplot(data= t_rental, aes(rent_control)) + 
+  geom_histogram(bins = 15)
+
+ggplot(data= c_rental, aes(rent_control), main = 'Histogram of rent_control Ads applied to w/ Control') + 
+  geom_histogram(bins = 15)
+```
+
+
+```{r echo = TRUE}
+ATE = mean(rental$Responded[rental$Treatment == 1]) - mean(rental$Responded[rental$Treatment == 0])
+
+rental_rand_inf = rental
+
+ones = sum(rental$Treatment)
+zeros = length(rental$Treatment) - ones
+
+randomize <- function() sample(c(rep(0,zeros),rep(1,ones)))
+
+est_ate = function(){
+  rental_rand_inf$new_treat = randomize()
+  pos = rental_rand_inf %>%
+  group_by(new_treat) %>%
+  summarize(avg = mean(Responded))
+  est_ate = pos$avg[pos$new_treat == 1] - pos$avg[pos$new_treat == 0]
+  return(est_ate)
+}
+
+check = replicate(10000, est_ate())
+hist(check, main = "Histogram of the Estimated ATEs from Randomization Simulation")
+abline(v = ATE, col = "red")
+
+pval = mean( abs(check) >= abs(ATE))
+
+paste('The two tailed t-test from the randomization experiment =', pval)
+
+```
+
+```{r echo = TRUE}
+
+t.test(rental$Responded[rental$Treatment == 1],
+       rental$Responded[rental$Treatment == 0])
+
+```
+
+```{r echo = TRUE}
+naive_model = lm(Responded ~ Treatment, data = rental)
+rse.model = sqrt(diag(vcovHC(naive_model)))
+
+
+stargazer(naive_model, type = "text", omit.stat = "f",
+se = list(rse.model),
+star.cutoffs = c(0.05, 0.01, 0.001))
+```
+
+
+```{r echo = TRUE}
+full_model = lm(Responded ~ Treatment + Greater_Region + Shared_Bathroom + Monthly_Rate + as.numeric(Rooms) + Photos  + rent_control, data = rental)
+rse.model = sqrt(diag(vcovHC(full_model)))
+
+
+stargazer(full_model, type = "text", omit.stat = "f",
+se = list(rse.model),
+star.cutoffs = c(0.05, 0.01, 0.001))
+```
+
+
+```{r echo = TRUE}
+model1 = lm(Responded ~ Treatment + Greater_Region, data = rental)
+rse.model = sqrt(diag(vcovHC(model1)))
+
+
+stargazer(model1, type = "text", omit.stat = "f",
+se = list(rse.model),
+star.cutoffs = c(0.05, 0.01, 0.001))
+```
+
+```{r echo = FALSE}
+SF = subset(rental, Greater_Region == "San Francisco")
+SB = subset(rental, Greater_Region == "South Bay")
+
+model_SF = lm(Responded ~ Treatment + MonthlyRate_1000 + Photos + rent_control, data = SF)
+rse.modelSF = sqrt(diag(vcovHC(model_SF)))
+
+model_SB = lm(Responded ~ Treatment + MonthlyRate_1000 + Photos + rent_control, data = SB)
+rse.modelSB = sqrt(diag(vcovHC(model_SB)))
+
+stargazer(model_SF, model_SB, type = "text", omit.stat = "f",
+se = list(rse.modelSF, rse.modelSB),
+star.cutoffs = c(0.05, 0.01, 0.001))
+
+t.test(SF$MonthlyRate_1000, SB$MonthlyRate_1000)
+
+model_SF_int = lm(Responded ~ Treatment + MonthlyRate_1000 *Treatment, data = SF)
+rse.modelSF_int = sqrt(diag(vcovHC(model_SF_int)))
+
+stargazer(model_SF_int, type = "text", omit.stat = "f",
+se = list(rse.modelSF_int),
+star.cutoffs = c(0.05, 0.01, 0.001))
+
+model_SB_int = lm(Responded ~ Treatment + MonthlyRate_1000 *Treatment, data = SB)
+rse.modelSB_int = sqrt(diag(vcovHC(model_SB_int)))
+
+stargazer(model_SB_int, type = "text", omit.stat = "f",
+se = list(rse.modelSB_int),
+star.cutoffs = c(0.05, 0.01, 0.001))
+
+```
+
+
+```{r echo = TRUE}
+model2 = lm(Responded ~ Treatment + Greater_Region + rent_control, data = rental)
+rse.model = sqrt(diag(vcovHC(model2)))
+
+stargazer(model2, type = "text", omit.stat = "f",
+se = list(rse.model),
+star.cutoffs = c(0.05, 0.01, 0.001))
+```
+
+
+```{r echo = TRUE}
+model3 = lm(Responded ~ Treatment + Greater_Region + rent_control + Monthly_Rate, data = rental)
+rse.model = sqrt(diag(vcovHC(model3)))
+
+stargazer(model3, type = "text", omit.stat = "f",
+se = list(rse.model),
+star.cutoffs = c(0.05, 0.01, 0.001))
+```
+
+
+## Testing Interactions
+
+### Rent control and treatment
+
+```{r echo = TRUE}
+model_RC = lm(Responded ~ Treatment + rent_control + rent_control * Treatment, data = rental)
+rse.model = sqrt(diag(vcovHC(model_RC)))
+
+
+stargazer(model_RC, type = "text", omit.stat = "f",
+se = list(rse.model),
+star.cutoffs = c(0.05, 0.01, 0.001))
+```
+
+### 
+
+```{r echo = TRUE}
+model_BR = lm(Responded ~ Treatment + Shared_Bathroom + Shared_Bathroom * Treatment, data = rental)
+rse.model = sqrt(diag(vcovHC(model_BR)))
+
+
+stargazer(model_BR, type = "text", omit.stat = "f",
+se = list(rse.model),
+star.cutoffs = c(0.05, 0.01, 0.001))
+```
+
+```{r echo = TRUE}
+model_Rate = lm(Responded ~ Treatment + MonthlyRate_1000 + MonthlyRate_1000 * Treatment, data = rental)
+rse.model = sqrt(diag(vcovHC(model_Rate)))
+
+
+stargazer(model_Rate, type = "text", omit.stat = "f",
+se = list(rse.model),
+star.cutoffs = c(0.05, 0.01, 0.001))
+```
+
+
+```{r echo = TRUE}
+model_Photos = lm(Responded ~ Treatment + Photos, data = rental)
+rse.model = sqrt(diag(vcovHC(model_Photos)))
+
+
+stargazer(model_Photos, type = "text", omit.stat = "f",
+se = list(rse.model),
+star.cutoffs = c(0.05, 0.01, 0.001))
+```
+
+
+
+
+```{r echo = TRUE}
+
+san_fran = subset(rental, Greater_Region == 'San Francisco')
+south_bay = subset(rental, Greater_Region == 'South Bay')
+
+model_SF = lm(Responded ~ Treatment + MonthlyRate_1000 + MonthlyRate_1000 * Treatment, data = san_fran)
+rse.model_SF = sqrt(diag(vcovHC(model_SF)))
+
+model_SB = lm(Responded ~ Treatment + MonthlyRate_1000 + MonthlyRate_1000 * Treatment, data = south_bay)
+rse.model_SB = sqrt(diag(vcovHC(model_SB)))
+
+
+stargazer(model_SF, model_SB, type = "text", omit.stat = "f",
+se = list(rse.model_SF, rse.model_SB),
+star.cutoffs = c(0.05, 0.01, 0.001))
+```
+
+```{r echo = TRUE}
+model_Region = lm(Responded ~ Treatment + Greater_Region + Greater_Region * Treatment, data = rental)
+rse.model = sqrt(diag(vcovHC(model_Region)))
+
+
+stargazer(model_Region, type = "text", omit.stat = "f",
+se = list(rse.model),
+star.cutoffs = c(0.05, 0.01, 0.001))
+```
+
+
+```{r echo = TRUE}
+new_data = rental
+
+new_data$roommates = as.numeric(new_data$Rooms) - 1
+new_data$roommates[new_data$roommates == 0] + 1
+
+model_Roommate = lm(Responded ~ Treatment + as.numeric(roommates) + as.numeric(roommates) * Treatment, data = new_data)
+rse.model = sqrt(diag(vcovHC(model_Roommate)))
+
+
+stargazer(model_Roommate, type = "text", omit.stat = "f",
+se = list(rse.model),
+star.cutoffs = c(0.05, 0.01, 0.001))
+```
+
+
+```{r echo = TRUE}
+new_data = rental
+
+new_data$roommates = as.numeric(new_data$Rooms) - 1
+new_data$roommates[new_data$roommates == 0] + 1
+
+model_Roommate = lm(Responded ~ Treatment + as.numeric(roommates) + rent_control + as.numeric(roommates) * Treatment * rent_control, data = new_data)
+rse.model = sqrt(diag(vcovHC(model_Roommate)))
+
+
+stargazer(model_Roommate, type = "text", omit.stat = "f",
+se = list(rse.model),
+star.cutoffs = c(0.05, 0.01, 0.001))
+```
+
+
+
+```{r echo = TRUE}
+
+rooms_1_2 = subset(rental, Rooms == 2 | Rooms == 3)
+
+model_rooms1_2 = lm(Responded ~ Treatment + Rooms + Rooms * Treatment, data = rooms_1_2)
+rse.model = sqrt(diag(vcovHC(model_rooms1_2)))
+
+
+stargazer(model_rooms1_2, type = "text", omit.stat = "f",
+se = list(rse.model),
+star.cutoffs = c(0.05, 0.01, 0.001))
+```
+
+
+```{r echo = TRUE}
+rooms_1_2 = subset(rental, Rooms == 2 | Rooms == 3)
+
+model_rooms1_2 = lm(Responded ~ Treatment + Rooms + Rooms * Treatment, data = rooms_1_2)
+rse.model = sqrt(diag(vcovHC(model_rooms1_2)))
+
+
+stargazer(model_rooms1_2, type = "text", omit.stat = "f",
+se = list(rse.model),
+star.cutoffs = c(0.05, 0.01, 0.001))
+```
+
+# Calculating Statistical Power
+
+In order to look at the statistical power of our experiment, we calculated Cohen's d to measure the power of our experiment, which was only 0.192. In order to see a large effect and obtain a power of 0.8, we estimate the sample size has to increase to 328 subjects for each group at the 0.05 significance level. 
+
+```{r echo = FALSE}
+
+#Code taken from https://stackoverflow.com/questions/15436702/estimate-cohens-d-for-effect-size
+cohens_d <- function(x, y) {
+    lx <- length(x)- 1
+    ly <- length(y)- 1
+    md  <- mean(x) - mean(y)       ## mean difference (numerator)
+    csd <- lx * var(x) + ly * var(y)
+    csd <- csd/(lx + ly)
+    csd <- sqrt(csd)                     ## common sd computation
+
+    cd  <- md/csd                        ## cohen's d
+}
+res <- cohens_d(rental$Responded[rental$Treatment == 1], rental$Responded[rental$Treatment == 0])
+
+pwr.t2n.test(n1 = length(rental$Responded[rental$Treatment == 0]), n2 = length(rental$Responded[rental$Treatment == 1]), 
+             d = res , sig.level = 0.05, power = NULL)
+
+```
+
+```{r echo = FALSE}
+pwr.t.test(d=res, sig.level=.05, power = .80, type = 'two.sample')
+```
+
+
+
+
